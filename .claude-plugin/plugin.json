@@ -1,0 +1,12 @@
+{
+  "name": "reinject",
+  "description": "Context rot prevention for Claude Code — monitors transcript growth and re-injects context when it drifts out of the model's recency zone",
+  "version": "0.1.0",
+  "author": {
+    "name": "Yonatan Horan"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yonatanhoran/reinject"
+  }
+}

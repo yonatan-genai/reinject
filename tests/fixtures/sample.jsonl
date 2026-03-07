@@ -1,0 +1,10 @@
+{"message":{"role":"user","content":"Hello, can you help me?"},"isSidechain":false}
+{"message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this request..."},{"type":"text","text":"Sure, I can help you with that!"}]},"isSidechain":false}
+{"message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls -la"}}]},"isSidechain":false}
+{"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"total 42\ndrwxr-xr-x  5 user staff 160 Mar 8 10:00 .\ndrwxr-xr-x 10 user staff 320 Mar 8 09:00 .."}]},"isSidechain":false}
+{"message":{"role":"assistant","content":[{"type":"text","text":"I can see the directory listing. There are 5 items in the current directory."}]},"isSidechain":false}
+{"message":{"role":"user","content":"Now run the tests please"},"isSidechain":false}
+{"message":{"role":"assistant","content":[{"type":"thinking","thinking":"The user wants me to run tests. I should use go test or npm test depending on the project type. Let me check what kind of project this is first."},{"type":"text","text":"I'll run the test suite for you."}]},"isSidechain":false}
+{"message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_2","name":"Bash","input":{"command":"go test -race ./..."}}]},"isSidechain":false}
+{"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_2","content":"ok  \tgithub.com/example/pkg\t0.5s\nok  \tgithub.com/example/pkg/internal\t1.2s"}]},"isSidechain":false}
+{"message":{"role":"assistant","content":[{"type":"text","text":"All tests passed! Two packages tested with the race detector enabled."}]},"isSidechain":false}

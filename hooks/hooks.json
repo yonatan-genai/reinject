@@ -1,0 +1,26 @@
+{
+  "description": "Context rot prevention — monitors transcript growth and enables just-in-time re-injection",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/context-monitor.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/compact-reset.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
