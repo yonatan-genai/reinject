@@ -33,6 +33,12 @@ REINJECT_RECENCY_THRESHOLD="${REINJECT_RECENCY_THRESHOLD:-85}"
 REINJECT_PRIMACY_THRESHOLD="${REINJECT_PRIMACY_THRESHOLD:-15}"
 REINJECT_MIN_CONTEXT_BYTES="${REINJECT_MIN_CONTEXT_BYTES:-21000}"
 
+# Skip sub-agents — context reinjection is pointless in short-lived sub-agents.
+# The monitor doesn't run there either, so there's no state to read.
+_reinject_agent_id=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)
+_REINJECT_IS_SUBAGENT=""
+[ -n "$_reinject_agent_id" ] && _REINJECT_IS_SUBAGENT=1
+
 # Use session_id from hook input for state isolation (stable across the session).
 # The caller must have done INPUT=$(cat) before sourcing this library.
 # Falls back to $PPID for backwards compat (non-CC callers, older CC versions).
@@ -47,6 +53,9 @@ should_reinject() {
     echo "[ERROR] should_reinject: hook_name required" >&2
     return 1
   fi
+
+  # Never reinject in sub-agents
+  [ -n "$_REINJECT_IS_SUBAGENT" ] && return 1
 
   local consumer_file="$_REINJECT_STATE_DIR/$hook_name"
   mkdir -p "$_REINJECT_STATE_DIR"

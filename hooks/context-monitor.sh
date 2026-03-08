@@ -11,6 +11,10 @@
 set -euo pipefail
 
 INPUT=$(cat)
+
+# Skip sub-agents — their context growth is irrelevant and no consumer reads it
+_agent_id=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)
+[ -n "$_agent_id" ] && exit 0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JQ_FILTER="$SCRIPT_DIR/../parsers/jq/extract-text-bytes.jq"
 REINJECT_PARSER="${REINJECT_PARSER:-$SCRIPT_DIR/../parsers/rust/reinject-parser}"
