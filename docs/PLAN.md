@@ -16,20 +16,21 @@ A library (`should-reinject.sh`) that hooks call to decide whether to re-inject 
 
 ## Architecture
 
-### State File
+### State Files
 
-Per-hook state stored in `/tmp/claude-reinject-<PID>/<hook-name>`:
-```
-<timestamp>           # unix epoch of last injection
-<jsonl_byte_offset>   # byte offset into transcript JSONL at last injection
-<text_bytes_total>    # cumulative non-thinking text bytes at last injection
-<text_bytes_thinking> # cumulative thinking text bytes at last injection
-```
+State stored in `/tmp/claude-reinject-{session_id}/`:
+
+**Monitor files** (written by `context-monitor.sh`):
+- `monitor-status` — 2 lines: cumulative non-thinking bytes, cumulative thinking bytes
+- `monitor-offset` — single value: byte offset into transcript JSONL
+
+**Consumer files** (per hook name, e.g. `supabase-context`):
+- 2 lines: non-thinking bytes and thinking bytes at time of last injection
 
 ### Flow (per hook invocation)
 
 ```
-Hook fires (PreToolUse/UserPromptSubmit/SessionStart)
+Hook fires (PreToolUse/UserPromptSubmit/PostToolUse/SessionStart)
   │
   ├─ Parse transcript_path from stdin JSON
   │
@@ -85,7 +86,7 @@ Thinking blocks present a challenge:
 ### Compaction handling
 
 SessionStart with matcher `compact` fires after auto/manual compaction. The hook:
-1. Deletes all state files in `/tmp/claude-reinject-<PID>/`
+1. Deletes all state files in `/tmp/claude-reinject-{session_id}/`
 2. This means next hook call hits step 1 (first run) → injects
 
 This replaces the old PreCompact marker + timestamp comparison approach. Simpler, fewer moving parts.
@@ -112,11 +113,13 @@ The `transcript_path` is provided in the hook's JSON stdin input (common field f
 
 ### Hook types this supports
 
-| Hook Event | Matcher | Use Case |
-|-----------|---------|----------|
-| PreToolUse | Tool-specific (e.g., `Bash`) | Re-inject when relevant tool is used |
-| UserPromptSubmit | N/A (no matcher) | Re-inject on keyword match in prompt |
-| SessionStart | `compact` | Reset state after compaction |
+| Hook Event | Component | Matcher | Use Case |
+|-----------|-----------|---------|----------|
+| UserPromptSubmit | Monitor | N/A | Catches user message + previous turn's tail |
+| PostToolUse | Monitor | N/A | Catches each tool result |
+| PreToolUse | Consumer | Tool-specific (e.g., `Bash`) | Re-inject when relevant tool is used |
+| UserPromptSubmit | Consumer | N/A | Re-inject on keyword match in prompt |
+| SessionStart | Reset | `compact` | Reset state after compaction |
 
 ## File Structure
 
@@ -148,7 +151,7 @@ claude-context-hooks/
 
 1. **Plugin distribution format** — Claude Code plugins have a specific structure (`hooks/hooks.json`). Need to verify the plugin spec supports library files that consumer hooks can source.
 
-2. **PPID stability** — We use `$PPID` to namespace state files. If CC spawns hooks via an intermediate process, PPID might not be the CC process. The `session_id` from stdin JSON would be more reliable but requires parsing stdin before accessing state.
+2. ~~**PPID stability**~~ **Resolved.** Hooks now use `session_id` from JSON stdin (stable across the session, shared by orchestrator and sub-agents). Falls back to `$PPID` for backwards compat with non-CC callers.
 
 3. **Multi-session edge case** — Two simultaneous sessions in the same project would have different PPIDs and different state dirs. Not a problem.
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Example consumer: re-inject Supabase context when supabase commands are detected.
 #
-# The context-monitor.sh (UserPromptSubmit) has already parsed the JSONL
+# The context-monitor.sh (UserPromptSubmit + PostToolUse) has already parsed the JSONL
 # and written cumulative byte counts. This hook just reads those counts
 # and compares against its own injection history — pure arithmetic.
 #
@@ -37,13 +37,6 @@ if [ -f "$GUIDE_FILE" ]; then
 fi
 
 # Output additionalContext and record injection
-jq -n --arg ctx "$CONTEXT" '{
-  hookSpecificOutput: {
-    hookEventName: "PreToolUse",
-    additionalContext: $ctx
-  }
-}'
-
-# Record that we injected (updates per-hook state)
+reinject_output "PreToolUse" "$CONTEXT"
 reinject_record "supabase-context"
 exit 0
