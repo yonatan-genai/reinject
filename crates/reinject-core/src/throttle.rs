@@ -81,33 +81,71 @@ fn decide_with_state(
     let saved_nt = saved.non_thinking_bytes;
     let saved_th = saved.thinking_bytes;
 
-    // Step 1: Compaction — monitor byte count went backwards.
-    if monitor_nt < saved_nt {
+    // Step 1: Compaction — monitor reading went backwards.
+    //
+    // Prefer the usage-token signal when both readings have it. Token totals
+    // come straight from `message.usage` and reset across `/clear` and
+    // auto-compact, so a decrease unambiguously means the live window shrank.
+    // Byte counters only ever grow within a single jsonl file, so a decrease
+    // there indicates a CC build that truncates / rewrites the transcript.
+    let compacted = match (monitor.usage_tokens, saved.usage_tokens) {
+        (Some(mt), Some(st)) => mt < st,
+        _ => monitor_nt < saved_nt,
+    };
+    if compacted {
         record(state_dir, hook_name, monitor)?;
         return Ok(ThrottleDecision::Inject(InjectReason::CompactionDetected));
     }
 
-    let delta_nt = monitor_nt - saved_nt;
-
     // Step 2: Absolute growth exceeded threshold.
-    if delta_nt > config.growth_bytes {
-        // Caller records after injection; we don't auto-record here so that
-        // failing injections don't silently advance the baseline.
-        return Ok(ThrottleDecision::Inject(InjectReason::GrowthExceeded {
-            delta: delta_nt,
-            threshold: config.growth_bytes,
-        }));
+    //
+    // Convert the byte-based threshold to tokens via the same ~3 bytes/token
+    // factor used everywhere else in this crate, so existing tier presets
+    // (52K / 105K / 175K bytes) keep behaving the same.
+    if let (Some(mt), Some(st)) = (monitor.usage_tokens, saved.usage_tokens) {
+        let delta_tokens = mt.saturating_sub(st);
+        let threshold_tokens = config.growth_bytes / 3;
+        if delta_tokens > threshold_tokens {
+            return Ok(ThrottleDecision::Inject(InjectReason::GrowthExceeded {
+                delta: delta_tokens,
+                threshold: threshold_tokens,
+            }));
+        }
+    } else {
+        let delta_nt = monitor_nt - saved_nt;
+        if delta_nt > config.growth_bytes {
+            return Ok(ThrottleDecision::Inject(InjectReason::GrowthExceeded {
+                delta: delta_nt,
+                threshold: config.growth_bytes,
+            }));
+        }
     }
 
     // Step 3: Dead-zone position check.
-    let total = monitor_nt + monitor_th;
-    if total > config.min_context_bytes && total > 0 {
-        let saved_total = saved_nt + saved_th;
-        let position_pct = saved_total * 100 / total;
-        if position_pct > config.primacy_threshold && position_pct < config.recency_threshold {
-            return Ok(ThrottleDecision::Inject(InjectReason::DeadZone {
-                position_pct,
-            }));
+    //
+    // Position is "where in the live window does the saved injection sit",
+    // which only makes sense in token space when we have it. If usage tokens
+    // are unavailable we fall back to the byte-based proxy.
+    if let (Some(mt), Some(st)) = (monitor.usage_tokens, saved.usage_tokens) {
+        let min_tokens = config.min_context_bytes / 3;
+        if mt > min_tokens && mt > 0 {
+            let position_pct = st * 100 / mt;
+            if position_pct > config.primacy_threshold && position_pct < config.recency_threshold {
+                return Ok(ThrottleDecision::Inject(InjectReason::DeadZone {
+                    position_pct,
+                }));
+            }
+        }
+    } else {
+        let total = monitor_nt + monitor_th;
+        if total > config.min_context_bytes && total > 0 {
+            let saved_total = saved_nt + saved_th;
+            let position_pct = saved_total * 100 / total;
+            if position_pct > config.primacy_threshold && position_pct < config.recency_threshold {
+                return Ok(ThrottleDecision::Inject(InjectReason::DeadZone {
+                    position_pct,
+                }));
+            }
         }
     }
 
@@ -133,6 +171,7 @@ mod tests {
         MonitorStatus {
             non_thinking_bytes: nt,
             thinking_bytes: th,
+            ..Default::default()
         }
     }
 
@@ -271,5 +310,83 @@ mod tests {
         write_consumer_state(dir.path(), "hook-a", &status(49_000, 0)).unwrap();
         let result = should_reinject("hook-a", &default_config(), dir.path()).unwrap();
         assert_eq!(result, ThrottleDecision::Skip);
+    }
+
+    // ── Usage-token signal (preferred when present) ──────────────────────────
+
+    fn status_with_tokens(nt: u64, th: u64, tokens: u64) -> MonitorStatus {
+        MonitorStatus {
+            non_thinking_bytes: nt,
+            thinking_bytes: th,
+            usage_tokens: Some(tokens),
+        }
+    }
+
+    #[test]
+    fn usage_compaction_detected_when_tokens_drop() {
+        // The cross-/clear scenario: byte counts kept growing (file is
+        // append-only) but usage_tokens went from 758_000 down to 30_000
+        // because the live window reset.
+        let dir = tmp();
+        write_monitor_status(dir.path(), &status_with_tokens(7_000_000, 100_000, 30_000)).unwrap();
+        write_consumer_state(
+            dir.path(),
+            "hook-a",
+            &status_with_tokens(6_000_000, 50_000, 758_000),
+        )
+        .unwrap();
+        let result = should_reinject("hook-a", &default_config(), dir.path()).unwrap();
+        assert_eq!(
+            result,
+            ThrottleDecision::Inject(InjectReason::CompactionDetected),
+            "tokens dropped — must detect compaction even though bytes grew",
+        );
+    }
+
+    #[test]
+    fn usage_growth_threshold_uses_tokens_not_bytes() {
+        // Default growth_bytes = 105_000 → threshold_tokens = 35_000.
+        let dir = tmp();
+        write_monitor_status(dir.path(), &status_with_tokens(60_000, 0, 100_000)).unwrap();
+        write_consumer_state(dir.path(), "hook-a", &status_with_tokens(60_000, 0, 50_000)).unwrap();
+        let result = should_reinject("hook-a", &default_config(), dir.path()).unwrap();
+        assert_eq!(
+            result,
+            ThrottleDecision::Inject(InjectReason::GrowthExceeded {
+                delta: 50_000,
+                threshold: 35_000,
+            })
+        );
+    }
+
+    #[test]
+    fn usage_dead_zone_position_in_token_space() {
+        // Default min_context_bytes / 3 = 7_000 token floor.
+        // monitor=20_000 tokens, saved=10_000 tokens → 50% position → dead zone.
+        let dir = tmp();
+        write_monitor_status(dir.path(), &status_with_tokens(0, 0, 20_000)).unwrap();
+        write_consumer_state(dir.path(), "hook-a", &status_with_tokens(0, 0, 10_000)).unwrap();
+        let result = should_reinject("hook-a", &default_config(), dir.path()).unwrap();
+        assert_eq!(
+            result,
+            ThrottleDecision::Inject(InjectReason::DeadZone { position_pct: 50 })
+        );
+    }
+
+    #[test]
+    fn falls_back_to_bytes_when_either_side_missing_usage() {
+        // Monitor has tokens, consumer doesn't. Must fall back to byte logic.
+        let dir = tmp();
+        write_monitor_status(dir.path(), &status_with_tokens(200_000, 0, 60_000)).unwrap();
+        write_consumer_state(dir.path(), "hook-a", &status(80_000, 0)).unwrap();
+        // Byte delta = 120_000 > 105_000 → byte-based growth fire.
+        let result = should_reinject("hook-a", &default_config(), dir.path()).unwrap();
+        assert_eq!(
+            result,
+            ThrottleDecision::Inject(InjectReason::GrowthExceeded {
+                delta: 120_000,
+                threshold: 105_000,
+            })
+        );
     }
 }
