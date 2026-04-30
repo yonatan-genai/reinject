@@ -4,7 +4,6 @@
 //! Files are plain text, two newline-separated integers each.
 
 use std::fs;
-use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
@@ -121,16 +120,19 @@ fn write_two_u64(path: &Path, a: u64, b: u64) -> Result<()> {
     atomic_write(path, content.as_bytes())
 }
 
-/// Write bytes to `path`, creating parent dirs if needed.
+/// Write bytes to `path` atomically: write to a `.tmp` sibling, then rename.
+///
+/// POSIX `rename(2)` is atomic — readers see either the old file or the new
+/// file, never a partial write.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create dir {}", parent.display()))?;
     }
-    let mut file =
-        fs::File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
-    file.write_all(data)
-        .with_context(|| format!("failed to write {}", path.display()))
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, data).with_context(|| format!("failed to write {}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))
 }
 
 #[cfg(test)]
