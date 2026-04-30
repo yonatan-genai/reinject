@@ -237,6 +237,7 @@ mod tests {
         let monitor = MonitorStatus {
             non_thinking_bytes: 42,
             thinking_bytes: 7,
+            ..Default::default()
         };
         write_monitor_status(dir.path(), &monitor).unwrap();
         record(dir.path(), "my-hook", &monitor).unwrap();

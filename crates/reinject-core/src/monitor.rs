@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 
 use crate::{
-    parser::parse_transcript_delta,
+    parser::{parse_latest_usage, parse_transcript_delta},
     state::{read_monitor_status, read_offset, write_monitor_status, write_offset, MonitorStatus},
 };
 
@@ -48,9 +48,16 @@ pub fn update_monitor(state_dir: &Path, transcript_path: &Path) -> Result<()> {
 
     // Accumulate on top of previous cumulative totals.
     let prev = read_monitor_status(state_dir).unwrap_or_default();
+
+    // Always re-scan the entire jsonl for the latest usage block. This is the
+    // authoritative reading and resets across `/clear` and auto-compact, unlike
+    // the byte counters which only ever grow within a single jsonl file.
+    let usage_tokens = parse_latest_usage(transcript_path).map(|u| u.total());
+
     let updated = MonitorStatus {
         non_thinking_bytes: prev.non_thinking_bytes + delta_nt,
         thinking_bytes: prev.thinking_bytes + delta_th,
+        usage_tokens,
     };
 
     write_monitor_status(state_dir, &updated)?;
@@ -113,6 +120,36 @@ mod tests {
         update_monitor(state_dir.path(), &transcript).unwrap();
         let after_second = read_monitor_status(state_dir.path()).unwrap();
         assert_eq!(after_first, after_second);
+    }
+
+    #[test]
+    fn usage_block_populates_monitor_status() {
+        let state_dir = tmp();
+        let transcript_dir = tmp();
+        let usage_line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":1000,"cache_creation_input_tokens":2000,"cache_read_input_tokens":3000,"output_tokens":40}}}"#;
+        let transcript = write_jsonl(&transcript_dir, &format!("{usage_line}\n{usage_line}\n"));
+        update_monitor(state_dir.path(), &transcript).unwrap();
+        let status = read_monitor_status(state_dir.path()).unwrap();
+        assert_eq!(status.usage_tokens, Some(6040));
+    }
+
+    #[test]
+    fn usage_resets_after_clear_boundary() {
+        let state_dir = tmp();
+        let transcript_dir = tmp();
+        let big = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"big"}],"usage":{"input_tokens":50000,"cache_creation_input_tokens":100000,"cache_read_input_tokens":600000,"output_tokens":8000}}}"#;
+        let cleared = r#"{"type":"user","message":{"role":"user","content":"Session cleared"}}"#;
+        let small = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"small"}],"usage":{"input_tokens":2000,"cache_creation_input_tokens":1000,"cache_read_input_tokens":500,"output_tokens":300}}}"#;
+
+        let transcript = write_jsonl(&transcript_dir, &format!("{big}\n{cleared}\n{small}\n"));
+        update_monitor(state_dir.path(), &transcript).unwrap();
+
+        let status = read_monitor_status(state_dir.path()).unwrap();
+        assert_eq!(status.usage_tokens, Some(3800));
+        assert!(
+            status.usage_tokens.unwrap() < 758_000,
+            "post-clear reading must reflect the new (small) window"
+        );
     }
 
     #[test]
